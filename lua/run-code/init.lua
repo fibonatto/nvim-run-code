@@ -7,6 +7,10 @@ M.defaults = {
     timeout = 0,
     temp_dir = "/tmp",
     no_default_mappings = false,
+    terminal_mode = true,
+    terminal_position = "horizontal",
+    terminal_height = 10,
+    terminal_width = 40,
     commands = {}, -- User overrides
 }
 
@@ -180,9 +184,23 @@ function M.run(optimized)
         print(string.format("Running %s...", (optimized and "optimized" or "dev")))
     end
 
-    -- Use :! for parity with original, or we could use toggleterm/terminal
-    -- For now, let's stick to the requested adaptation of the existing logic.
-    vim.cmd("!" .. exec_cmd)
+    if M.config.terminal_mode then
+        local pos = M.config.terminal_position == "vertical" and "vsplit" or "split"
+        local size = M.config.terminal_position == "vertical" and M.config.terminal_width or M.config.terminal_height
+        
+        vim.cmd(string.format("botright %s", pos))
+        if M.config.terminal_position == "vertical" then
+            vim.cmd(string.format("vertical resize %d", size))
+        else
+            vim.cmd(string.format("resize %d", size))
+        end
+        
+        vim.cmd("term " .. exec_cmd)
+        vim.cmd("startinsert")
+    else
+        -- Use :! for parity with original behavior
+        vim.cmd("!" .. exec_cmd)
+    end
 end
 
 function M.set_command(ft, cmd)
@@ -208,6 +226,10 @@ function M.show_config()
     print("  Show feedback: " .. tostring(M.config.show_feedback))
     print("  Timeout: " .. tostring(M.config.timeout))
     print("  Temp dir: " .. M.config.temp_dir)
+    print("  Terminal mode: " .. tostring(M.config.terminal_mode))
+    print("  Terminal position: " .. M.config.terminal_position)
+    print("  Terminal height: " .. M.config.terminal_height)
+    print("  Terminal width: " .. M.config.terminal_width)
 end
 
 return M
