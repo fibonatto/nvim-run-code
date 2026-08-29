@@ -1,5 +1,29 @@
 local M = {}
 
+local function get_c_command()
+	if vim.fn.filereadable("Makefile") == 1 then
+		return "make run"
+	end
+
+	local file = vim.fn.expand("%:p")
+	local output = vim.fn.expand("%:p:r")
+	local content = table.concat(vim.fn.readfile(file), "\n")
+
+	local flags = ""
+
+	if content:match("#include%s*<cs50%.h>") then
+		flags = " -I/usr/local/include -L/usr/local/lib -lcs50"
+	end
+
+	return string.format(
+		"clang %s%s -o %s && %s",
+		vim.fn.shellescape(file),
+		flags,
+		vim.fn.shellescape(output),
+		vim.fn.shellescape(output)
+	)
+end
+
 M.defaults = {
 	auto_save = true,
 	clear_terminal = true,
@@ -19,8 +43,7 @@ M.config = vim.deepcopy(M.defaults)
 M.run_commands_dev = {
 	agda = "agda-cli check %",
 	bend = "bend run %",
-	-- c = "test -f Makefile && make run || clang % -o %:r && ./%:r",
-	c = "test -f Makefile && make run || (grep -q '#include[[:space:]]*<cs50.h>' % && clang % -I/usr/local/include -L/usr/local/lib -lcs50 -o %:r || clang % -o %:r) && ./%:r",
+	c = get_c_command,
 	caramel = "mel main",
 	coc = "coc type %:r && coc norm %:r",
 	cpp = "clang++ -std=c++17 % -o %:r && ./%:r",
@@ -123,7 +146,6 @@ M.run_commands_opt = {
 	end,
 	zig = "zig run -O ReleaseFast %",
 }
-
 function M.setup(opts)
 	M.config = vim.tbl_deep_extend("force", M.config, opts or {})
 
@@ -174,7 +196,7 @@ function M.run(optimized)
 	elseif optimized and M.run_commands_dev[ft] then
 		cmd = M.run_commands_dev[ft]
 	else
-		cmd = "cc % -o %:r && ./%:r"
+		cmd = "clear"
 	end
 
 	if type(cmd) == "function" then
