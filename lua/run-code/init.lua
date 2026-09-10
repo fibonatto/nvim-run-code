@@ -24,6 +24,30 @@ local function get_c_command()
 	)
 end
 
+local function get_cpp_command()
+	local file = vim.fn.expand("%:p")
+	local output = vim.fn.expand("%:p:r")
+
+	return string.format(
+		"clang++ -std=c++17 %s -o %s && %s",
+		vim.fn.shellescape(file),
+		vim.fn.shellescape(output),
+		vim.fn.shellescape(output)
+	)
+end
+
+local function get_cpp_llvm_command()
+	local file = vim.fn.expand("%:p")
+	local output = vim.fn.expand("%:p:r")
+
+	return string.format(
+		"clang++ -std=c++17 %s $(llvm-config --cxxflags --ldflags --system-libs --libs all) -o %s && %s",
+		vim.fn.shellescape(file),
+		vim.fn.shellescape(output),
+		vim.fn.shellescape(output)
+	)
+end
+
 M.defaults = {
 	auto_save = true,
 	clear_terminal = true,
@@ -46,7 +70,7 @@ M.run_commands_dev = {
 	c = get_c_command,
 	caramel = "mel main",
 	coc = "coc type %:r && coc norm %:r",
-	cpp = "clang++ -std=c++17 % -o %:r && ./%:r",
+	cpp = get_cpp_command,
 	csharp = "mcs % && mono %:r.exe",
 	cuda = "nvcc % -o %:r && ./%:r",
 	dart = "dart %",
@@ -111,7 +135,7 @@ M.run_commands_opt = {
 	agda = "agda-cli run %",
 	bend = "bend run %",
 	c = "make && ./$(basename %:r)",
-	cpp = "clang++ -O3 -march=native -std=c++20 % -o %:r && ./%:r",
+	cpp = get_cpp_llvm_command,
 	cuda = "nvcc -O3 % -o %:r && ./%:r",
 	dart = "dart compile exe % -o %:r && ./%:r",
 	go = 'go build -ldflags="-s -w" % && ./%:r',
