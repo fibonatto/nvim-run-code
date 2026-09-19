@@ -66,7 +66,7 @@ M.config = vim.deepcopy(M.defaults)
 
 M.run_commands_dev = {
 	agda = "agda-cli check %",
-	bend = "bend run %",
+	bend = "bend %",
 	c = get_c_command,
 	caramel = "mel main",
 	coc = "coc type %:r && coc norm %:r",
@@ -133,7 +133,7 @@ M.run_commands_dev = {
 
 M.run_commands_opt = {
 	agda = "agda-cli run %",
-	bend = "bend run %",
+	bend = "bend %",
 	c = "make && ./$(basename %:r)",
 	cpp = get_cpp_llvm_command,
 	cuda = "nvcc -O3 % -o %:r && ./%:r",
