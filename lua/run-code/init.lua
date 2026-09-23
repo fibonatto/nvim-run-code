@@ -1,8 +1,8 @@
 local M = {}
 
--- ============================================================================
+-- =============================================================================
 -- Command generators
--- ============================================================================
+-- =============================================================================
 
 local function get_c_command()
 	if vim.fn.filereadable("Makefile") == 1 then
@@ -52,9 +52,9 @@ local function get_cpp_llvm_command()
 	)
 end
 
--- ============================================================================
+-- =============================================================================
 -- Configuration
--- ============================================================================
+-- =============================================================================
 
 M.defaults = {
 	auto_save = true,
@@ -73,10 +73,8 @@ M.defaults = {
 
 	-- tmux
 	tmux_enabled = true,
-	tmux_position = "horizontal",
-	tmux_size = 10,
+	tmux_size = 80,
 	tmux_target = "",
-	tmux_reuse = false,
 
 	-- User overrides
 	commands = {},
@@ -85,9 +83,9 @@ M.defaults = {
 
 M.config = vim.deepcopy(M.defaults)
 
--- ============================================================================
+-- =============================================================================
 -- Development commands
--- ============================================================================
+-- =============================================================================
 
 M.run_commands_dev = {
 	agda = "agda-cli check %",
@@ -156,9 +154,9 @@ M.run_commands_dev = {
 	zig = "zig run %",
 }
 
--- ============================================================================
+-- =============================================================================
 -- Optimized commands
--- ============================================================================
+-- =============================================================================
 
 M.run_commands_opt = {
 	agda = "agda-cli run %",
@@ -202,13 +200,14 @@ M.run_commands_opt = {
 	zig = "zig run -O ReleaseFast %",
 }
 
--- ============================================================================
+-- =============================================================================
 -- Test commands
 --
--- These are intentionally separate from dev/opt.
+-- T uses these commands.
 --
--- A missing test command falls back to the optimized command.
--- ============================================================================
+-- If a language does not have a dedicated test command, T falls back to
+-- the optimized command and then to the development command.
+-- =============================================================================
 
 M.run_commands_test = {
 	c = "make test",
@@ -230,9 +229,9 @@ M.run_commands_test = {
 	zig = "zig build test",
 }
 
--- ============================================================================
--- Helpers
--- ============================================================================
+-- =============================================================================
+-- Command resolution
+-- =============================================================================
 
 local function resolve_command(commands, ft)
 	local cmd = commands[ft]
@@ -247,11 +246,12 @@ end
 local function get_command(mode)
 	local ft = vim.bo.filetype
 
-	-- User override always wins.
+	-- User overrides have priority for normal commands.
 	if mode ~= "test" and M.config.commands[ft] then
 		return resolve_command(M.config.commands, ft)
 	end
 
+	-- Dedicated test override.
 	if mode == "test" and M.config.test_commands[ft] then
 		return resolve_command(M.config.test_commands, ft)
 	end
@@ -264,17 +264,32 @@ local function get_command(mode)
 		return resolve_command(M.run_commands_opt, ft)
 	end
 
-	-- Test fallback:
-	--
-	-- test command -> optimized command -> development command
-	--
-	-- This means every language can participate in `T` without
-	-- requiring an explicit test command.
 	if mode == "test" then
-		return resolve_command(M.run_commands_opt, ft) or resolve_command(M.run_commands_dev, ft)
+		return resolve_command(M.run_commands_test, ft)
+			or resolve_command(M.run_commands_opt, ft)
+			or resolve_command(M.run_commands_dev, ft)
 	end
 
 	return nil
+end
+
+-- =============================================================================
+-- Common execution helpers
+-- =============================================================================
+
+local function check_file()
+	local file = vim.fn.expand("%")
+
+	if file == "" or vim.fn.filereadable(file) == 0 then
+		vim.notify("File not found", vim.log.levels.ERROR)
+		return false
+	end
+
+	if M.config.auto_save and vim.bo.modified then
+		vim.cmd("write")
+	end
+
+	return true
 end
 
 local function build_exec_command(cmd)
@@ -295,40 +310,9 @@ local function build_exec_command(cmd)
 	return prefix .. "time " .. cmd
 end
 
-local function check_file()
-	local file = vim.fn.expand("%")
-
-	if file == "" or vim.fn.filereadable(file) == 0 then
-		vim.notify("File not found", vim.log.levels.ERROR)
-		return false
-	end
-
-	if M.config.auto_save and vim.bo.modified then
-		vim.cmd("write")
-	end
-
-	return true
-end
-
-local function tmux_available()
-	return vim.fn.executable("tmux") == 1
-end
-
-local function tmux_inside()
-	return vim.env.TMUX ~= nil and vim.env.TMUX ~= ""
-end
-
-local function get_tmux_target()
-	if M.config.tmux_target ~= "" then
-		return M.config.tmux_target
-	end
-
-	return ""
-end
-
--- ============================================================================
+-- =============================================================================
 -- Neovim terminal
--- ============================================================================
+-- =============================================================================
 
 local function run_terminal(exec_cmd)
 	local pos = M.config.terminal_position == "vertical" and "vsplit" or "split"
@@ -347,9 +331,21 @@ local function run_terminal(exec_cmd)
 	vim.cmd("startinsert")
 end
 
--- ============================================================================
+-- =============================================================================
 -- tmux
--- ============================================================================
+-- =============================================================================
+
+local function tmux_available()
+	return vim.fn.executable("tmux") == 1
+end
+
+local function get_tmux_target()
+	if M.config.tmux_target ~= "" then
+		return M.config.tmux_target
+	end
+
+	return nil
+end
 
 local function run_tmux(exec_cmd)
 	if not tmux_available() then
@@ -357,36 +353,52 @@ local function run_tmux(exec_cmd)
 		return
 	end
 
-	local orientation = M.config.tmux_position == "vertical" and "-h" or "-v"
-
-	local size_flag = M.config.tmux_position == "vertical" and "-l " .. M.config.tmux_size
-		or "-l " .. M.config.tmux_size
+	-- tmux -h means horizontal split:
+	--
+	-- +----------------+----------------+
+	-- |                |                |
+	-- |     Neovim     |     runner     |
+	-- |                |                |
+	-- +----------------+----------------+
+	--
+	-- This is the side-by-side layout the plugin uses for tmux execution.
 
 	local target = get_tmux_target()
 
-	-- tmux split-window executes through the user's shell.
+	-- Keep the pane alive after the command finishes so its output and
+	-- exit status remain visible.
 	--
-	-- shellescape() is deliberately applied to the complete command,
-	-- rather than trying to escape individual pieces after interpolation.
-	local command = vim.fn.shellescape(exec_cmd)
+	-- `status=$?` must be captured immediately after the command.
+	local wrapped_cmd = string.format(
+		"%s; status=$?; printf '\\n[run-code] exited with code %%s\\n' \"$status\"; exec $SHELL",
+		exec_cmd
+	)
 
-	local args = string.format("split-window %s %s %s", orientation, size_flag, command)
+	local escaped_command = vim.fn.shellescape(wrapped_cmd)
 
-	if target ~= "" then
-		args = string.format("split-window -t %s %s %s %s", vim.fn.shellescape(target), orientation, size_flag, command)
+	local args
+
+	if target then
+		args = string.format(
+			"split-window -t %s -h -l %d %s",
+			vim.fn.shellescape(target),
+			M.config.tmux_size,
+			escaped_command
+		)
+	else
+		args = string.format("split-window -h -l %d %s", M.config.tmux_size, escaped_command)
 	end
 
 	local result = vim.fn.system("tmux " .. args)
 
 	if vim.v.shell_error ~= 0 then
 		vim.notify("tmux failed: " .. vim.trim(result), vim.log.levels.ERROR)
-		return
 	end
 end
 
--- ============================================================================
+-- =============================================================================
 -- Public runner
--- ============================================================================
+-- =============================================================================
 
 function M.run(mode, backend)
 	if not check_file() then
@@ -403,15 +415,15 @@ function M.run(mode, backend)
 	local exec_cmd = build_exec_command(cmd)
 
 	if M.config.show_feedback then
-		local labels = {
+		local mode_name = {
 			dev = "dev",
 			opt = "optimized",
 			test = "test",
 		}
 
-		local target = backend == "tmux" and "tmux" or "terminal"
+		local backend_name = backend == "tmux" and "tmux" or "terminal"
 
-		print(string.format("Running %s in %s...", labels[mode] or mode, target))
+		print(string.format("Running %s in %s...", mode_name[mode] or mode, backend_name))
 	end
 
 	if backend == "tmux" then
@@ -431,9 +443,21 @@ function M.run(mode, backend)
 	end
 end
 
--- ============================================================================
--- User commands
--- ============================================================================
+-- =============================================================================
+-- Commands
+-- =============================================================================
+
+function M.set_command(ft, cmd)
+	M.config.commands[ft] = cmd
+end
+
+function M.set_test_command(ft, cmd)
+	M.config.test_commands[ft] = cmd
+end
+
+-- =============================================================================
+-- Setup
+-- =============================================================================
 
 function M.setup(opts)
 	M.config = vim.tbl_deep_extend("force", M.config, opts or {})
@@ -501,21 +525,9 @@ function M.setup(opts)
 	end
 end
 
--- ============================================================================
--- User command configuration
--- ============================================================================
-
-function M.set_command(ft, cmd)
-	M.config.commands[ft] = cmd
-end
-
-function M.set_test_command(ft, cmd)
-	M.config.test_commands[ft] = cmd
-end
-
--- ============================================================================
+-- =============================================================================
 -- Language listing
--- ============================================================================
+-- =============================================================================
 
 function M.list_languages()
 	local languages = {}
@@ -543,9 +555,9 @@ function M.list_languages()
 	print("Supported languages: " .. table.concat(langs, ", "))
 end
 
--- ============================================================================
--- Configuration display
--- ============================================================================
+-- =============================================================================
+-- Configuration
+-- =============================================================================
 
 function M.show_config()
 	print("Run Code Config:")
@@ -561,7 +573,6 @@ function M.show_config()
 	print("  Terminal width: " .. M.config.terminal_width)
 
 	print("  tmux enabled: " .. tostring(M.config.tmux_enabled))
-	print("  tmux position: " .. M.config.tmux_position)
 	print("  tmux size: " .. tostring(M.config.tmux_size))
 	print("  tmux target: " .. (M.config.tmux_target == "" and "<current pane>" or M.config.tmux_target))
 end
