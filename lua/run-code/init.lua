@@ -62,21 +62,16 @@ M.defaults = {
 	show_feedback = true,
 	timeout = 0,
 	temp_dir = "/tmp",
-
 	no_default_mappings = false,
 
-	-- Neovim terminal
 	terminal_mode = true,
 	terminal_position = "horizontal",
 	terminal_height = 10,
 	terminal_width = 40,
 
-	-- tmux
 	tmux_enabled = true,
-	tmux_size = 80,
 	tmux_target = "",
 
-	-- User overrides
 	commands = {},
 	test_commands = {},
 }
@@ -202,11 +197,6 @@ M.run_commands_opt = {
 
 -- =============================================================================
 -- Test commands
---
--- T uses these commands.
---
--- If a language does not have a dedicated test command, T falls back to
--- the optimized command and then to the development command.
 -- =============================================================================
 
 M.run_commands_test = {
@@ -246,12 +236,10 @@ end
 local function get_command(mode)
 	local ft = vim.bo.filetype
 
-	-- User overrides have priority for normal commands.
 	if mode ~= "test" and M.config.commands[ft] then
 		return resolve_command(M.config.commands, ft)
 	end
 
-	-- Dedicated test override.
 	if mode == "test" and M.config.test_commands[ft] then
 		return resolve_command(M.config.test_commands, ft)
 	end
@@ -274,7 +262,7 @@ local function get_command(mode)
 end
 
 -- =============================================================================
--- Common execution helpers
+-- Common helpers
 -- =============================================================================
 
 local function check_file()
@@ -292,10 +280,16 @@ local function check_file()
 	return true
 end
 
+local function expand_command(cmd)
+	return vim.fn.expandcmd(cmd)
+end
+
 local function build_exec_command(cmd)
 	if not cmd or cmd == "" then
 		return "clear"
 	end
+
+	cmd = expand_command(cmd)
 
 	local prefix = ""
 
@@ -339,60 +333,44 @@ local function tmux_available()
 	return vim.fn.executable("tmux") == 1
 end
 
-local function get_tmux_target()
-	if M.config.tmux_target ~= "" then
-		return M.config.tmux_target
-	end
-
-	return nil
-end
-
 local function run_tmux(exec_cmd)
 	if not tmux_available() then
 		vim.notify("tmux is not installed", vim.log.levels.ERROR)
 		return
 	end
 
-	-- tmux -h means horizontal split:
+	-- `-h` creates a left/right split.
 	--
-	-- +----------------+----------------+
-	-- |                |                |
-	-- |     Neovim     |     runner     |
-	-- |                |                |
-	-- +----------------+----------------+
+	-- `-p 50` gives the new pane 50% of the current pane.
 	--
-	-- This is the side-by-side layout the plugin uses for tmux execution.
+	-- We explicitly invoke the user's shell so that the command and
+	-- its exit status are handled inside the new tmux pane.
 
-	local target = get_tmux_target()
+	local shell = vim.o.shell
 
-	-- Keep the pane alive after the command finishes so its output and
-	-- exit status remain visible.
-	--
-	-- `status=$?` must be captured immediately after the command.
-	local wrapped_cmd = string.format(
-		"%s; status=$?; printf '\\n[run-code] exited with code %%s\\n' \"$status\"; exec $SHELL",
+	local shell_command = string.format(
+		"%s; status=$?; printf '\\n\\n[run-code] exit code: %%s\\n' \"$status\"; printf '[run-code] press Enter to close... '; read",
 		exec_cmd
 	)
 
-	local escaped_command = vim.fn.shellescape(wrapped_cmd)
+	local command = string.format("%s -c %s", vim.fn.shellescape(shell), vim.fn.shellescape(shell_command))
 
 	local args
 
-	if target then
+	if M.config.tmux_target ~= "" then
 		args = string.format(
-			"split-window -t %s -h -l %d %s",
-			vim.fn.shellescape(target),
-			M.config.tmux_size,
-			escaped_command
+			"split-window -t %s -h -p 50 %s",
+			vim.fn.shellescape(M.config.tmux_target),
+			vim.fn.shellescape(command)
 		)
 	else
-		args = string.format("split-window -h -l %d %s", M.config.tmux_size, escaped_command)
+		args = string.format("split-window -h -p 50 %s", vim.fn.shellescape(command))
 	end
 
-	local result = vim.fn.system("tmux " .. args)
+	local output = vim.fn.system("tmux " .. args)
 
 	if vim.v.shell_error ~= 0 then
-		vim.notify("tmux failed: " .. vim.trim(result), vim.log.levels.ERROR)
+		vim.notify("tmux failed: " .. vim.trim(output), vim.log.levels.ERROR)
 	end
 end
 
@@ -444,7 +422,7 @@ function M.run(mode, backend)
 end
 
 -- =============================================================================
--- Commands
+-- User commands
 -- =============================================================================
 
 function M.set_command(ft, cmd)
@@ -454,10 +432,6 @@ end
 function M.set_test_command(ft, cmd)
 	M.config.test_commands[ft] = cmd
 end
-
--- =============================================================================
--- Setup
--- =============================================================================
 
 function M.setup(opts)
 	M.config = vim.tbl_deep_extend("force", M.config, opts or {})
@@ -556,7 +530,7 @@ function M.list_languages()
 end
 
 -- =============================================================================
--- Configuration
+-- Configuration display
 -- =============================================================================
 
 function M.show_config()
@@ -573,7 +547,6 @@ function M.show_config()
 	print("  Terminal width: " .. M.config.terminal_width)
 
 	print("  tmux enabled: " .. tostring(M.config.tmux_enabled))
-	print("  tmux size: " .. tostring(M.config.tmux_size))
 	print("  tmux target: " .. (M.config.tmux_target == "" and "<current pane>" or M.config.tmux_target))
 end
 
