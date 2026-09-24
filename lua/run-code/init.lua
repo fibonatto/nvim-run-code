@@ -343,8 +343,15 @@ end
 -- The whole (expanded) command runs inside `sh -c`, so `time` and `timeout`
 -- apply to the entire `a && b` chain, not only to its first command, and the
 -- command syntax does not depend on the user's interactive shell.
-local function build_exec_command(cmd)
-	local body = "sh -c " .. vim.fn.shellescape(expand_placeholders(cmd))
+local function build_exec_command(cmd, backend)
+	local script = expand_placeholders(cmd)
+
+	if backend == "tmux" then
+		-- The tmux pane stays open (see run_tmux), so print the exit code there.
+		script = script .. "; rc=$?; printf '\\n[run-code] exit code: %s\\n' \"$rc\"; exit $rc"
+	end
+
+	local body = "sh -c " .. vim.fn.shellescape(script)
 	local prefix = M.config.clear_terminal and "clear && " or ""
 
 	if M.config.timeout > 0 then
@@ -359,20 +366,19 @@ end
 -- =============================================================================
 
 local function run_terminal(exec_cmd)
-	if M.config.terminal_position == "vertical" then
-		vim.cmd(string.format("botright %dvnew", M.config.terminal_width))
+	local vertical = M.config.terminal_position == "vertical"
+
+	vim.cmd(vertical and "botright vsplit" or "botright split")
+
+	if vertical then
+		vim.cmd(string.format("vertical resize %d", M.config.terminal_width))
 	else
-		vim.cmd(string.format("botright %dnew", M.config.terminal_height))
+		vim.cmd(string.format("resize %d", M.config.terminal_height))
 	end
 
-	-- jobstart/termopen take the command as-is: no Ex-command re-expansion of
-	-- `%`, `#` or `|`.
-	if vim.fn.has("nvim-0.11") == 1 then
-		vim.fn.jobstart(exec_cmd, { term = true })
-	else
-		vim.fn.termopen(exec_cmd)
-	end
-
+	-- `:terminal` hands the string to 'shell' as-is; only Ex's own `%`/`#`
+	-- expansion needs escaping.
+	vim.cmd("terminal " .. exec_cmd:gsub("[%%#]", "\\%0"))
 	vim.cmd("startinsert")
 end
 
@@ -401,32 +407,37 @@ local function run_tmux(exec_cmd)
 		return
 	end
 
-	-- The wrapper is POSIX `sh` (so `rc=$?` etc. also work when the user's shell
-	-- is zsh, where `status` is read-only, or fish). The command itself still
-	-- runs in the user's shell.
-	local script = vim.fn.shellescape(vim.o.shell)
-		.. " -c "
-		.. vim.fn.shellescape(exec_cmd)
-		.. "; rc=$?; printf '\\n\\n[run-code] exit code: %s\\n' \"$rc\""
-		.. "; printf '[run-code] press Enter to close... '; read _"
-
-	local command = "sh -c " .. vim.fn.shellescape(script)
-
+	-- The pane starts as the user's normal interactive shell and the command is
+	-- typed into it, so the pane stays open after the command ends until the
+	-- user closes it (`exit` / Ctrl-D). Nothing depends on the command
+	-- finishing cleanly or on reading from the tty.
+	--
 	-- `-h` creates a left/right split, `-p 50` gives the new pane 50%.
 	-- `-c` makes the pane start in Neovim's cwd (tmux otherwise uses the
 	-- session's directory, which breaks every relative path).
-	local args = { "tmux", "split-window" }
+	local args = { "tmux", "split-window", "-P", "-F", "#{pane_id}" }
 
 	if M.config.tmux_target ~= "" then
 		vim.list_extend(args, { "-t", M.config.tmux_target })
 	end
 
-	vim.list_extend(args, { "-h", "-p", "50", "-c", vim.fn.getcwd(), command })
+	vim.list_extend(args, { "-h", "-p", "50", "-c", vim.fn.getcwd() })
 
-	local output = vim.fn.system(args)
+	local pane = vim.trim(vim.fn.system(args))
 
 	if vim.v.shell_error ~= 0 then
-		vim.notify("tmux failed: " .. vim.trim(output), vim.log.levels.ERROR)
+		vim.notify("tmux failed: " .. pane, vim.log.levels.ERROR)
+		return
+	end
+
+	local out = vim.fn.system({ "tmux", "send-keys", "-t", pane, "-l", exec_cmd })
+
+	if vim.v.shell_error == 0 then
+		out = vim.fn.system({ "tmux", "send-keys", "-t", pane, "Enter" })
+	end
+
+	if vim.v.shell_error ~= 0 then
+		vim.notify("tmux failed: " .. vim.trim(out), vim.log.levels.ERROR)
 	end
 end
 
@@ -454,7 +465,7 @@ function M.run(mode, backend)
 		return
 	end
 
-	local exec_cmd = build_exec_command(cmd)
+	local exec_cmd = build_exec_command(cmd, backend)
 
 	if M.config.show_feedback then
 		local mode_name = {
@@ -567,7 +578,7 @@ function M.setup(opts)
 	if not M.config.no_default_mappings then
 		local group = vim.api.nvim_create_augroup("RunCodeMappings", { clear = true })
 
-		vim.api.nvim_create_autocmd("FileType", {
+		vim.api.nvim_create_autocmd({ "FileType", "BufEnter" }, {
 			group = group,
 			callback = function(args)
 				set_buffer_mappings(args.buf)
